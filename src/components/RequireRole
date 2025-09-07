@@ -1,0 +1,23 @@
+"use client";
+import { ReactNode, useEffect, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import type { AppRole } from "@/lib/roles";
+
+export default function RequireRole({
+  allow, children, fallback,
+}: { allow: (r: AppRole)=>boolean; children: ReactNode; fallback?: ReactNode }) {
+  const [role, setRole] = useState<AppRole>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { (async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { window.location.href = "/login"; return; }
+    const { data } = await supabase.rpc("get_my_role");
+    setRole((data as AppRole) ?? null);
+    setLoading(false);
+  })(); }, []);
+
+  if (loading) return <div style={{padding:20}}>Loading…</div>;
+  if (!allow(role)) return fallback ?? <div style={{padding:20}}>🚫 אין הרשאה</div>;
+  return <>{children}</>;
+}
