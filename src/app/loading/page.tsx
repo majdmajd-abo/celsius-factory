@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 /** ===== Types ===== */
+type Role = "factory_manager" | "production_manager" | "driver" | "secretary" | "employee" | null;
+
 type Customer = { id: string; name: string };
 type Sheet = { id: string; load_date: string; driver_name: string; note: string | null };
 
@@ -30,9 +32,18 @@ type SheetRow = {
   lot?: { id: string; supplier: string | null; shipment_number: string | null } | null;
 };
 
+/** helper: to extract an error message from unknown */
+function errMsg(e: unknown): string {
+  if (e && typeof e === "object" && "message" in e) {
+    const m = (e as { message?: string }).message;
+    if (typeof m === "string") return m;
+  }
+  try { return JSON.stringify(e); } catch { return String(e); }
+}
+
 export default function LoadingPage() {
   /** ===== Role / Permissions ===== */
-  const [role, setRole] = useState<string | null>(null);
+  const [role, setRole] = useState<Role>(null);
   const canEdit = role === "factory_manager" || role === "production_manager" || role === "driver";
 
   /** ===== Header (Sheet) ===== */
@@ -60,63 +71,65 @@ export default function LoadingPage() {
   /** ===== UI msg ===== */
   const [msg, setMsg] = useState<string>("");
 
-useEffect(() => {
-  const init = async () => {
-    // תפקיד
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      const { data: prof, error: profErr } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("id", user.id)
-        .single();
-      setRole(profErr ? "employee" : (prof?.role || "employee"));
-    } else {
+  useEffect(() => {
+    const init = async () => {
+      // תפקיד
+      const { data: auth } = await supabase.auth.getUser();
+      if (auth?.user?.id) {
+        const { data: prof, error: profErr } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", auth.user.id)
+          .single();
+        setRole((profErr ? "employee" : ((prof?.role as Role) || "employee")));
+      } else {
+        setRole("employee");
+      }
+
+      // לקוחות
+      const { data: cust, error: custErr } = await supabase
+        .from("customers")
+        .select("id,name")
+        .order("name", { ascending: true });
+      if (!custErr) setCustomers((cust as Customer[]) || []);
+
+      // לוטים זמינים (עם יתרה > 0)
+      await loadAvailableLots();
+
+      // גליונות אחרונים
+      await loadRecentSheets();
+    };
+
+    init().catch((e) => {
+      console.error(e);
       setRole("employee");
-    }
-
-    // לקוחות
-    const { data: cust } = await supabase
-      .from("customers")
-      .select("id,name")
-      .order("name", { ascending: true });
-    setCustomers((cust as any[]) || []);
-
-    // לוטים זמינים (עם יתרה > 0)
-    await loadAvailableLots();
-
-    // גליונות אחרונים
-    await loadRecentSheets();
-  };
-
-  init().catch((e) => {
-    console.error(e);
-    setRole("employee");
-    setMsg("⚠️ שגיאת טעינה ראשונית");
-  });
-}, []);
-
+      setMsg("⚠️ שגיאת טעינה ראשונית");
+    });
+  }, []);
 
   async function loadAvailableLots() {
     const { data, error } = await supabase
       .from("v_lots_available_for_loading")
       .select("id, slaughter_company, shipment_number, processed_net_kg, loaded_kg, remaining_kg, created_at")
       .order("created_at", { ascending: false });
-    if (error) setMsg("❌ שגיאה בטעינת לוטים: " + error.message);
+    if (error) {
+      setMsg("❌ שגיאה בטעינת לוטים: " + error.message);
+      return;
+    }
     setLots((data as LotAvail[]) || []);
   }
 
   async function loadRecentSheets() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("loading_sheets")
       .select("id,load_date,driver_name,note")
       .order("load_date", { ascending: false })
       .limit(30);
-    setRecentSheets((data as Sheet[]) || []);
+    if (!error) setRecentSheets((data as Sheet[]) || []);
   }
 
   async function loadSheetRows(sheetId: string) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("loading_sheet_rows")
       .select(`
         id,sheet_id,customer_id,delivery_note_number,lot_id,qty_kg,temp_at_loading,gender,
@@ -125,7 +138,7 @@ useEffect(() => {
       `)
       .eq("sheet_id", sheetId)
       .order("id", { ascending: true });
-    setSheetRows((data as SheetRow[]) || []);
+    if (!error) setSheetRows((data as SheetRow[]) || []);
   }
 
   // Create or load a sheet by (date + driver)
@@ -142,9 +155,10 @@ useEffect(() => {
       .maybeSingle();
 
     if (found) {
-      setActiveSheet(found as Sheet);
-      setSheetNote(found.note || "");
-      await loadSheetRows(found.id);
+      const f = found as Sheet;
+      setActiveSheet(f);
+      setSheetNote(f.note || "");
+      await loadSheetRows(f.id);
       setMsg("ℹ️ נטען גיליון קיים ליום/נהג");
       return;
     }
@@ -156,8 +170,9 @@ useEffect(() => {
       .single();
     if (error) { setMsg("❌ יצירת גיליון נכשלה: " + error.message); return; }
 
-    setActiveSheet(data as Sheet);
-    await loadSheetRows((data as Sheet).id);
+    const created = data as Sheet;
+    setActiveSheet(created);
+    await loadSheetRows(created.id);
     await loadRecentSheets();
     setMsg("✅ נוצר גיליון חדש");
   }
@@ -206,7 +221,7 @@ useEffect(() => {
     const payload = {
       sheet_id: activeSheet.id,
       customer_id: rowCustomerId,
-      order_id: null, // אין הזמנה
+      order_id: null as string | null, // אין הזמנה
       delivery_note_number: rowDelvNo.trim(),
       lot_id: rowLotId,
       qty_kg: qtyNum,
@@ -226,7 +241,7 @@ useEffect(() => {
 
     if (error) { setMsg("❌ שמירה נכשלה: " + error.message); return; }
 
-    setSheetRows(prev => [...prev, data as SheetRow]);
+    setSheetRows(prev => [...prev, (data as SheetRow)]);
 
     // Reset form
     setRowDelvNo("");
@@ -252,23 +267,24 @@ useEffect(() => {
   }
 
   async function openSheet(sid: string) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("loading_sheets")
       .select("id,load_date,driver_name,note")
       .eq("id", sid)
       .single();
-    if (!data) return;
-    setActiveSheet(data as Sheet);
-    setLoadDate((data as Sheet).load_date);
-    setDriverName((data as Sheet).driver_name);
-    setSheetNote((data as Sheet).note || "");
+    if (error || !data) return;
+    const s = data as Sheet;
+    setActiveSheet(s);
+    setLoadDate(s.load_date);
+    setDriverName(s.driver_name);
+    setSheetNote(s.note || "");
     await loadSheetRows(sid);
     setMsg("");
   }
 
   async function deleteSheet(sid: string) {
     if (!canEdit) { setMsg("❌ אין הרשאה"); return; }
-    const ok = confirm("למחוק את הגיליון וכל שורותיו?");
+    const ok = window.confirm("למחוק את הגיליון וכל שורותיו?");
     if (!ok) return;
     const { error } = await supabase.from("loading_sheets").delete().eq("id", sid);
     if (error) { setMsg("❌ מחיקה נכשלה: " + error.message); return; }

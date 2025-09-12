@@ -21,11 +21,27 @@ type LineRow = {
   female_unit_cost_per_kg: number | null;
 };
 
+/** טיפוס להכנסה לטבלת raw_receipt_lines (בלי id/created_at) */
+type InsertPayload = {
+  supplier: string | null;
+  shipment_number: string | null;
+  qty_kg: number | null;
+  temp_c: number | null;
+  slaughter_date: string | null;
+  expiry_date: string | null;
+  expected_yield_pct: number | null;
+  finished: boolean | null;
+  male_qty_kg: number | null;
+  female_qty_kg: number | null;
+  male_unit_cost_per_kg: number | null;
+  female_unit_cost_per_kg: number | null;
+};
+
 export default function ReceiptsPage() {
   // form state
   const [supplier, setSupplier] = useState("");
   const [shipment, setShipment] = useState("");
-  const [qtyKg, setQtyKg] = useState(""); // إجمالي اختياري (سنحسبه تلقائيًا إن تركته)
+  const [qtyKg, setQtyKg] = useState("");
   const [tempC, setTempC] = useState("");
   const [slaughterDate, setSlaughterDate] = useState("");
   const [expiryDate, setExpiryDate] = useState("");
@@ -68,7 +84,7 @@ export default function ReceiptsPage() {
       setRows([]);
       return;
     }
-    setRows(data as LineRow[]);
+    setRows((data as LineRow[]) || []);
   }
 
   // مجموع تلقائي للمساعدة في الـ UI فقط
@@ -82,23 +98,6 @@ export default function ReceiptsPage() {
   async function save() {
     setMsg("");
 
-    // نبني الـ payload
-    const payload: any = {
-      supplier: supplier.trim() || null,
-      shipment_number: shipment.trim() || null,      // نص كما طلبت
-      qty_kg: qtyKg === "" ? null : Number(qtyKg),   // إن تركتَه فارغًا سيُحسب تلقائيًا بالـ trigger
-      temp_c: tempC === "" ? null : Number(tempC),
-      slaughter_date: slaughterDate || null,
-      expiry_date: expiryDate || null,
-      expected_yield_pct: null,
-      finished: false,
-
-      male_qty_kg: maleQty === "" ? null : Number(maleQty),
-      female_qty_kg: femaleQty === "" ? null : Number(femaleQty),
-      male_unit_cost_per_kg: malePrice === "" ? null : Number(malePrice),
-      female_unit_cost_per_kg: femalePrice === "" ? null : Number(femalePrice),
-    };
-
     // فحوصات بسيطة
     const m = Number(maleQty || 0);
     const f = Number(femaleQty || 0);
@@ -111,6 +110,22 @@ export default function ReceiptsPage() {
       return;
     }
 
+    // payload עם טיפוס מפורש (בלי any)
+    const payload: InsertPayload = {
+      supplier: supplier.trim() || null,
+      shipment_number: shipment.trim() || null,
+      qty_kg: qtyKg === "" ? null : Number(qtyKg),
+      temp_c: tempC === "" ? null : Number(tempC),
+      slaughter_date: slaughterDate || null,
+      expiry_date: expiryDate || null,
+      expected_yield_pct: null,
+      finished: false,
+      male_qty_kg: maleQty === "" ? null : Number(maleQty),
+      female_qty_kg: femaleQty === "" ? null : Number(femaleQty),
+      male_unit_cost_per_kg: malePrice === "" ? null : Number(malePrice),
+      female_unit_cost_per_kg: femalePrice === "" ? null : Number(femalePrice),
+    };
+
     const { error } = await supabase.from("raw_receipt_lines").insert([payload]);
 
     if (error) {
@@ -119,7 +134,7 @@ export default function ReceiptsPage() {
     }
 
     setMsg("✅ تم الحفظ بنجاح");
-    // نظّف فقط الحقول المتغيرة
+    // ניקוי חלקי של הטופס
     setShipment("");
     setQtyKg("");
     setTempC("");
@@ -212,7 +227,7 @@ export default function ReceiptsPage() {
           </div>
 
           <div>
-            <label style={{ fontSize: 12 }}>تاريخ الذبح</label>
+            <label style={{ fontSize: 12 }}>תאריך الذبح</label>
             <input
               type="date"
               value={slaughterDate}
@@ -222,7 +237,7 @@ export default function ReceiptsPage() {
           </div>
 
           <div>
-            <label style={{ fontSize: 12 }}>تاريخ الانتهاء</label>
+            <label style={{ fontSize: 12 }}>תאריך الانتهاء</label>
             <input
               type="date"
               value={expiryDate}
@@ -300,8 +315,8 @@ export default function ReceiptsPage() {
             <thead>
               <tr>
                 <Th>الحالة</Th>
-                <Th>ت. الانتهاء</Th>
-                <Th>ت. الذبح</Th>
+                <Th>ת. الانتهاء</Th>
+                <Th>ת. الذبح</Th>
                 <Th>°C</Th>
                 <Th>إجمالي بروتو</Th>
                 <Th>ذكر (كغ)</Th>

@@ -40,14 +40,14 @@ type ProfitRow = { ym: string; revenue: number; cost: number; profit: number };
 export default function ReportsPage() {
   const [role, setRole] = useState<string | null>(null);
 
-  const [rows, setRows]             = useState<Row[]>([]);
-  const [customers, setCustomers]   = useState<Cust[]>([]);
-  const [orders, setOrders]         = useState<OrderLite[]>([]);
-  const [profit, setProfit]         = useState<ProfitRow[]>([]);
-  const [q, setQ]                   = useState("");
-  const [from, setFrom]             = useState("");
-  const [to, setTo]                 = useState("");
-  const [msg, setMsg]               = useState("");
+  const [rows, setRows]           = useState<Row[]>([]);
+  const [customers, setCustomers] = useState<Cust[]>([]);
+  const [orders, setOrders]       = useState<OrderLite[]>([]);
+  const [profit, setProfit]       = useState<ProfitRow[]>([]);
+  const [q, setQ]                 = useState("");
+  const [from, setFrom]           = useState("");
+  const [to, setTo]               = useState("");
+  const [msg, setMsg]             = useState("");
 
   useEffect(() => {
     (async () => {
@@ -60,10 +60,11 @@ export default function ReportsPage() {
           setRole("employee");
         }
         await loadAll();
-      } catch (e: any) {
-        console.error("reports load error:", e?.message || e);
+      } catch (e: unknown) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.error("reports load error:", errMsg);
         setRole("employee");
-        setMsg("❌ שגיאה בטעינת הדוחות: " + (e?.message || "Load failed"));
+        setMsg("❌ שגיאה בטעינת הדוחות: " + (errMsg || "Load failed"));
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -328,7 +329,15 @@ function Th({ children }: { children: React.ReactNode }) {
     </th>
   );
 }
-function Td({ children, colSpan, align }: { children: React.ReactNode; colSpan?: number; align?: any }) {
+function Td({
+  children,
+  colSpan,
+  align,
+}: {
+  children: React.ReactNode;
+  colSpan?: number;
+  align?: React.CSSProperties["textAlign"];
+}) {
   return (
     <td className="border p-2 text-right" colSpan={colSpan} align={align}>
       {children}
