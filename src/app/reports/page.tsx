@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -498,3 +500,5 @@ function VBarChart({
     </svg>
   );
 }
+
+
