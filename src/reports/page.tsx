@@ -12,7 +12,7 @@ type LotRow = {
   finished: boolean | null;
   // من الاستعلام المجمّع
   actual_net_sum: number | null;
-};
+}
 
 export default function ReportsPage() {
   const [role, setRole] = useState<string | null>(null);

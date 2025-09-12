@@ -2,304 +2,524 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { AppRole, RolePermissions } from "@/lib/roles";
 
-type OrderLite = { id: number; customer_name: string; status: string };
-type Item = { id: string; product_name: string; qty_kg: number };
-type Lot  = { id: string; slaughter_company: string | null; qty_kg: number };
+/** ===== Types ===== */
+type Customer = { id: string; name: string };
+type Sheet = { id: string; load_date: string; driver_name: string; note: string | null };
 
-type SourceRow = {
+type LotAvail = {
   id: string;
-  order_item_id: string;
-  qty_kg: number;
-  temp_at_loading: number | null;
-  lot?: { id: string; slaughter_company: string | null } | null;
+  slaughter_company: string | null;   // שם משחיטה (supplier)
+  shipment_number: string | null;     // מס’ תעודת משלוח ללוט
+  processed_net_kg: number | null;    // סה"כ נטו שעובד
+  loaded_kg: number | null;           // סה"כ שכבר הועמס
+  remaining_kg: number | null;        // יתרה = processed - loaded
+  created_at?: string;                // לשמירה על אפשרות order ב־view
 };
 
-export default function LoadingPage(){
-  const [role, setRole] = useState<AppRole | null>(null);
+type SheetRow = {
+  id: string;
+  sheet_id: string;
+  customer_id: string;
+  delivery_note_number: string;       // מס’ תעודת משלוח ללקוח
+  lot_id: string;
+  qty_kg: number;
+  temp_at_loading: number | null;
+  gender: "male" | "female" | null;
+  customer?: { id: string; name: string } | null;
+  lot?: { id: string; supplier: string | null; shipment_number: string | null } | null;
+};
 
-  // נתונים גלובליים
-  const [orders, setOrders] = useState<OrderLite[]>([]);
-  const [lots, setLots]     = useState<Lot[]>([]);
+export default function LoadingPage() {
+  /** ===== Role / Permissions ===== */
+  const [role, setRole] = useState<string | null>(null);
+  const canEdit = role === "factory_manager" || role === "production_manager" || role === "driver";
 
-  // בחירה
-  const [selOrder, setSelOrder] = useState<number | "">("");
-  const [items, setItems] = useState<Item[]>([]);
+  /** ===== Header (Sheet) ===== */
+  const [loadDate, setLoadDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [driverName, setDriverName] = useState<string>("");
+  const [sheetNote, setSheetNote] = useState<string>("");
+  const [activeSheet, setActiveSheet] = useState<Sheet | null>(null);
 
-  // מקורות/קישורים פר פריט
-  const [sources, setSources] = useState<Record<string, SourceRow[]>>({}); // itemId -> rows
+  /** ===== Master data ===== */
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [lots, setLots] = useState<LotAvail[]>([]); // מגיע מה־view: v_lots_available_for_loading
 
-  // טופס הוספה פר-פריט
-  const [lotPick, setLotPick]   = useState<Record<string,string>>({});
-  const [qtyPick, setQtyPick]   = useState<Record<string,string>>({});
-  const [tempPick, setTempPick] = useState<Record<string,string>>({});
+  /** ===== Row form ===== */
+  const [rowCustomerId, setRowCustomerId] = useState<string>("");
+  const [rowDelvNo, setRowDelvNo] = useState<string>("");
+  const [rowLotId, setRowLotId] = useState<string>("");
+  const [rowQty, setRowQty] = useState<string>("");
+  const [rowTemp, setRowTemp] = useState<string>("");
+  const [rowGender, setRowGender] = useState<"" | "male" | "female">("");
 
-  const [msg, setMsg] = useState("");
+  /** ===== Data for current sheet ===== */
+  const [sheetRows, setSheetRows] = useState<SheetRow[]>([]);
+  const [recentSheets, setRecentSheets] = useState<Sheet[]>([]);
 
-  const canEdit = useMemo(() => {
-    if (!role) return false;
-    const perms = RolePermissions[role];
-    return perms.editLoadingPlan === true;
-  }, [role]);
+  /** ===== UI msg ===== */
+  const [msg, setMsg] = useState<string>("");
 
-  // חישובי סה"כ להזמנה הנבחרת
-  const totals = useMemo(() => {
-    if (!selOrder) return { required: 0, linked: 0, missing: 0 };
-    const required = items.reduce((sum, it) => sum + (Number(it.qty_kg) || 0), 0);
-    const linked = items.reduce((sum, it) => {
-      const arr = sources[it.id] || [];
-      const s = arr.reduce((a, r) => a + (Number(r.qty_kg) || 0), 0);
-      return sum + s;
-    }, 0);
-    return { required, linked, missing: Math.max(0, required - linked) };
-  }, [selOrder, items, sources]);
-
-  // טען תפקיד + הזמנות + לוטים פתוחים
-  useEffect(()=>{ (async ()=>{
-    const { data: r } = await supabase.rpc("get_my_role");
-    setRole((r as AppRole) ?? null);
-
-    const { data: os } = await supabase
-      .from("orders")
-      .select("id, customer_name, status")
-      .order("created_at", { ascending:false });
-    setOrders((os as any[])?.map(o => ({ id:o.id, customer_name:o.customer_name, status:o.status })) || []);
-
-    const { data: ls } = await supabase
-      .from("raw_receipt_lines")
-      .select("id, slaughter_company, qty_kg")
-      .eq("finished", false)
-      .order("created_at", { ascending:false });
-    setLots((ls as any[] || []).map(l => ({ id:l.id, slaughter_company:l.slaughter_company, qty_kg:l.qty_kg })));
-  })(); },[]);
-
-  // כשבוחרים הזמנה – טען פריטים + המקורות שלהם
-  useEffect(()=>{ (async ()=>{
-    setItems([]); setSources({});
-    if (!selOrder) return;
-
-    const { data: its } = await supabase
-      .from("order_items")
-      .select("id, product_name, qty_kg")
-      .eq("order_id", selOrder);
-
-    const itemsList: Item[] = (its as any[] || []).map(i => ({
-      id: i.id, product_name: i.product_name, qty_kg: Number(i.qty_kg)
-    }));
-    setItems(itemsList);
-
-    // טען source rows לכל הפריטים שנבחרו
-    if (itemsList.length) {
-      const ids = itemsList.map(i => i.id);
-      const { data: srows } = await supabase
-        .from("order_item_sources")
-        .select("id, order_item_id, qty_kg, temp_at_loading, lot:receipt_line_id (id, slaughter_company)")
-        .in("order_item_id", ids);
-
-      const byItem: Record<string, SourceRow[]> = {};
-      itemsList.forEach(i => byItem[i.id] = []);
-      (srows as any[] || []).forEach(r => {
-        const row: SourceRow = {
-          id: r.id,
-          order_item_id: r.order_item_id,
-          qty_kg: Number(r.qty_kg),
-          temp_at_loading: r.temp_at_loading ?? null,
-          lot: r.lot ? { id: r.lot.id, slaughter_company: r.lot.slaughter_company } : null
-        };
-        byItem[row.order_item_id] = [...(byItem[row.order_item_id] || []), row];
-      });
-      setSources(byItem);
-
-      // אפס טפסים
-      const lp: Record<string,string> = {}, qp:Record<string,string> = {}, tp:Record<string,string> = {};
-      itemsList.forEach(i => { lp[i.id]=""; qp[i.id]=""; tp[i.id]=""; });
-      setLotPick(lp); setQtyPick(qp); setTempPick(tp);
+useEffect(() => {
+  const init = async () => {
+    // תפקיד
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      const { data: prof, error: profErr } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", user.id)
+        .single();
+      setRole(profErr ? "employee" : (prof?.role || "employee"));
+    } else {
+      setRole("employee");
     }
-  })(); },[selOrder]);
 
-  const addLink = async (itemId: string) => {
+    // לקוחות
+    const { data: cust } = await supabase
+      .from("customers")
+      .select("id,name")
+      .order("name", { ascending: true });
+    setCustomers((cust as any[]) || []);
+
+    // לוטים זמינים (עם יתרה > 0)
+    await loadAvailableLots();
+
+    // גליונות אחרונים
+    await loadRecentSheets();
+  };
+
+  init().catch((e) => {
+    console.error(e);
+    setRole("employee");
+    setMsg("⚠️ שגיאת טעינה ראשונית");
+  });
+}, []);
+
+
+  async function loadAvailableLots() {
+    const { data, error } = await supabase
+      .from("v_lots_available_for_loading")
+      .select("id, slaughter_company, shipment_number, processed_net_kg, loaded_kg, remaining_kg, created_at")
+      .order("created_at", { ascending: false });
+    if (error) setMsg("❌ שגיאה בטעינת לוטים: " + error.message);
+    setLots((data as LotAvail[]) || []);
+  }
+
+  async function loadRecentSheets() {
+    const { data } = await supabase
+      .from("loading_sheets")
+      .select("id,load_date,driver_name,note")
+      .order("load_date", { ascending: false })
+      .limit(30);
+    setRecentSheets((data as Sheet[]) || []);
+  }
+
+  async function loadSheetRows(sheetId: string) {
+    const { data } = await supabase
+      .from("loading_sheet_rows")
+      .select(`
+        id,sheet_id,customer_id,delivery_note_number,lot_id,qty_kg,temp_at_loading,gender,
+        customer:customer_id (id,name),
+        lot:lot_id (id,supplier,shipment_number)
+      `)
+      .eq("sheet_id", sheetId)
+      .order("id", { ascending: true });
+    setSheetRows((data as SheetRow[]) || []);
+  }
+
+  // Create or load a sheet by (date + driver)
+  async function createOrLoadSheet() {
     setMsg("");
-    if (!canEdit) return setMsg("❌ אין הרשאה");
+    if (!canEdit) { setMsg("❌ אין הרשאה"); return; }
+    if (!loadDate || !driverName.trim()) { setMsg("⚠️ מלא תאריך ושם נהג"); return; }
 
-    const lotId = lotPick[itemId];
-    const qty   = qtyPick[itemId];
-    const temp  = tempPick[itemId];
+    const { data: found } = await supabase
+      .from("loading_sheets")
+      .select("id,load_date,driver_name,note")
+      .eq("load_date", loadDate)
+      .eq("driver_name", driverName.trim())
+      .maybeSingle();
 
-    if (!lotId || !qty) return setMsg("⚠️ בחר לוט וכמות");
+    if (found) {
+      setActiveSheet(found as Sheet);
+      setSheetNote(found.note || "");
+      await loadSheetRows(found.id);
+      setMsg("ℹ️ נטען גיליון קיים ליום/נהג");
+      return;
+    }
 
     const { data, error } = await supabase
-      .from("order_item_sources")
-      .insert({
-        order_item_id: itemId,
-        receipt_line_id: lotId,
-        qty_kg: Number(qty),
-        temp_at_loading: temp ? Number(temp) : null
-      })
-      .select("id, order_item_id, qty_kg, temp_at_loading, lot:receipt_line_id (id, slaughter_company)")
+      .from("loading_sheets")
+      .insert({ load_date: loadDate, driver_name: driverName.trim(), note: sheetNote || null })
+      .select("id,load_date,driver_name,note")
       .single();
+    if (error) { setMsg("❌ יצירת גיליון נכשלה: " + error.message); return; }
 
-    if (error) return setMsg("❌ שמירה נכשלה");
-    setSources(prev => ({
-      ...prev,
-      [itemId]: [...(prev[itemId] || []), {
-        id: data!.id,
-        order_item_id: itemId,
-        qty_kg: Number(data!.qty_kg),
-        temp_at_loading: data!.temp_at_loading,
-        lot: data!.lot
-      }]
-    }));
-    // אפס שדות הטופס לאותו פריט
-    setLotPick(p => ({...p, [itemId]:""}));
-    setQtyPick(p => ({...p, [itemId]:""}));
-    setTempPick(p => ({...p, [itemId]:""}));
-    setMsg("✅ נשמר");
-  };
+    setActiveSheet(data as Sheet);
+    await loadSheetRows((data as Sheet).id);
+    await loadRecentSheets();
+    setMsg("✅ נוצר גיליון חדש");
+  }
 
-  const removeLink = async (itemId: string, sourceId: string) => {
+  async function saveSheetNote() {
+    if (!activeSheet) return;
+    const { error } = await supabase
+      .from("loading_sheets")
+      .update({ note: sheetNote || null })
+      .eq("id", activeSheet.id);
+    if (error) setMsg("❌ עדכון הערה נכשל"); else setMsg("✅ נשמרה הערה");
+  }
+
+  // Add row (with automatic remaining check on client)
+  async function addRow() {
     setMsg("");
-    if (!canEdit) return setMsg("❌ אין הרשאה");
-    const { error } = await supabase.from("order_item_sources").delete().eq("id", sourceId);
-    if (error) return setMsg("❌ מחיקה נכשלה");
-    setSources(prev => ({ ...prev, [itemId]: (prev[itemId] || []).filter(s => s.id !== sourceId)}));
-    setMsg("✅ נמחק");
-  };
-
-  // סיים העמסה: עדכון סטטוס ההזמנה ל-'loaded' עם אזהרה אם חסר
-  const finishLoading = async () => {
-    if (!selOrder) return;
     if (!canEdit) { setMsg("❌ אין הרשאה"); return; }
-
-    if (totals.missing > 0) {
-      const ok = confirm(`⚠️ חסר ${totals.missing.toFixed(2)} ק״ג לעומת הכמות הנדרשת. לסמן בכל זאת כ-Loaded?`);
-      if (!ok) return;
+    if (!activeSheet) { setMsg("❌ אין גיליון פעיל"); return; }
+    if (!rowCustomerId || !rowDelvNo.trim() || !rowLotId || !rowQty) {
+      setMsg("⚠️ חובה: לקוח, מס' תעודת משלוח, שם משחיטה, כמות");
+      return;
+    }
+    if (!rowGender) {
+      setMsg("⚠️ בחר מגדר (זכר/נקבה)");
+      return;
     }
 
-    const { error } = await supabase.from("orders").update({ status: "loaded" }).eq("id", selOrder);
-    if (error) { setMsg("❌ עדכון סטטוס נכשל"); return; }
+    const qtyNum = Number(rowQty);
+    if (!isFinite(qtyNum) || qtyNum <= 0) {
+      setMsg("⚠️ הכנס כמות חוקית (> 0)");
+      return;
+    }
 
-    // עדכן תצוגה מקומית
-    setOrders(prev => prev.map(o => o.id === selOrder ? { ...o, status: "loaded" } : o));
-    setMsg("✅ ההזמנה סומנה כ-Loaded");
-  };
+    // 🔒 Client-side: prevent exceeding remaining
+    const lot = lots.find(l => l.id === rowLotId);
+    const remaining = Number(lot?.remaining_kg || 0);
+    if (!lot || remaining <= 0) {
+      setMsg("❌ אין יתרה בלוט שנבחר");
+      return;
+    }
+    if (qtyNum > remaining + 1e-6) {
+      setMsg(`❌ הכמות (${qtyNum} ק״ג) חורגת מהיתרה (${remaining.toFixed(2)} ק״ג)`);
+      return;
+    }
+
+    const payload = {
+      sheet_id: activeSheet.id,
+      customer_id: rowCustomerId,
+      order_id: null, // אין הזמנה
+      delivery_note_number: rowDelvNo.trim(),
+      lot_id: rowLotId,
+      qty_kg: qtyNum,
+      temp_at_loading: rowTemp ? Number(rowTemp) : null,
+      gender: rowGender as "male" | "female",
+    };
+
+    const { data, error } = await supabase
+      .from("loading_sheet_rows")
+      .insert(payload)
+      .select(`
+        id,sheet_id,customer_id,delivery_note_number,lot_id,qty_kg,temp_at_loading,gender,
+        customer:customer_id (id,name),
+        lot:lot_id (id,supplier,shipment_number)
+      `)
+      .single();
+
+    if (error) { setMsg("❌ שמירה נכשלה: " + error.message); return; }
+
+    setSheetRows(prev => [...prev, data as SheetRow]);
+
+    // Reset form
+    setRowDelvNo("");
+    setRowLotId("");
+    setRowQty("");
+    setRowTemp("");
+    setRowGender("");
+
+    // Refresh available lots (remaining changed)
+    await loadAvailableLots();
+
+    setMsg("✅ שורה נוספה");
+  }
+
+  async function removeRow(rowId: string) {
+    setMsg("");
+    if (!canEdit) { setMsg("❌ אין הרשאה"); return; }
+    const { error } = await supabase.from("loading_sheet_rows").delete().eq("id", rowId);
+    if (error) { setMsg("❌ מחיקה נכשלה: " + error.message); return; }
+    setSheetRows(prev => prev.filter(r => r.id !== rowId));
+    await loadAvailableLots();
+    setMsg("✅ נמחק");
+  }
+
+  async function openSheet(sid: string) {
+    const { data } = await supabase
+      .from("loading_sheets")
+      .select("id,load_date,driver_name,note")
+      .eq("id", sid)
+      .single();
+    if (!data) return;
+    setActiveSheet(data as Sheet);
+    setLoadDate((data as Sheet).load_date);
+    setDriverName((data as Sheet).driver_name);
+    setSheetNote((data as Sheet).note || "");
+    await loadSheetRows(sid);
+    setMsg("");
+  }
+
+  async function deleteSheet(sid: string) {
+    if (!canEdit) { setMsg("❌ אין הרשאה"); return; }
+    const ok = confirm("למחוק את הגיליון וכל שורותיו?");
+    if (!ok) return;
+    const { error } = await supabase.from("loading_sheets").delete().eq("id", sid);
+    if (error) { setMsg("❌ מחיקה נכשלה: " + error.message); return; }
+    if (activeSheet?.id === sid) {
+      setActiveSheet(null);
+      setSheetRows([]);
+    }
+    await loadRecentSheets();
+    await loadAvailableLots();
+    setMsg("✅ גיליון נמחק");
+  }
+
+  /** Totals for current sheet (info only) */
+  const totals = useMemo(() => {
+    const linked = sheetRows.reduce((s, r) => s + Number(r.qty_kg || 0), 0);
+    return { linked };
+  }, [sheetRows]);
+
+  /** For input max hint */
+  const selectedLot = lots.find(l => l.id === rowLotId);
+  const remainingForSelected = Number(selectedLot?.remaining_kg || 0);
 
   return (
-    <div style={{maxWidth:1100, margin:"20px auto", padding:12}}>
-      <h1 style={{fontWeight:700, fontSize:22, marginBottom:12}}>🚚 זמן העמסה — שיוך לוטים לפי שורת הזמנה</h1>
+    <div style={{ maxWidth: 1100, margin: "20px auto", padding: 12, direction: "rtl" }}>
+      <h1 style={{ fontWeight: 700, fontSize: 22, marginBottom: 12 }}>🚚 זמן העמסה</h1>
 
-      {msg && <div style={{marginBottom:10, color: msg.startsWith("✅") ? "green" : "crimson"}}>{msg}</div>}
-
-      <div className="grid gap-3" style={{gridTemplateColumns:"1fr 1fr"}}>
-        <div>
-          <label>בחר הזמנה</label>
-          <select className="border p-2 w-full" value={selOrder as any} onChange={(e)=>setSelOrder(e.target.value ? Number(e.target.value) : "")}>
-            <option value="">— בחר —</option>
-            {orders.map(o => <option key={o.id} value={o.id}>#{o.id} — {o.customer_name} — {o.status}</option>)}
-          </select>
+      {msg && (
+        <div style={{ marginBottom: 10, color: msg.startsWith("✅") ? "green" : "crimson" }}>
+          {msg}
         </div>
-        <div>
-          <label>לוטים פתוחים</label>
-          <div className="border p-2 rounded text-sm" style={{maxHeight:100, overflow:"auto"}}>
-            {lots.map(l => <div key={l.id}>• {l.slaughter_company || l.id}</div>)}
+      )}
+
+      {/* Header: Create/Load sheet */}
+      <div className="rounded-2xl border bg-white p-4 shadow-sm" style={{ marginBottom: 16 }}>
+        <div className="grid" style={{ gridTemplateColumns: "1fr 1fr 2fr 1fr", gap: 12 }}>
+          <div>
+            <label>תאריך *</label>
+            <input type="date" className="border p-2 w-full" value={loadDate} onChange={(e) => setLoadDate(e.target.value)} />
           </div>
+          <div>
+            <label>שם נהג *</label>
+            <input className="border p-2 w-full" value={driverName} onChange={(e) => setDriverName(e.target.value)} />
+          </div>
+          <div>
+            <label>הערה (אופציונלי)</label>
+            <input className="border p-2 w-full" placeholder="מס׳ משאית / משמרת..." value={sheetNote} onChange={(e) => setSheetNote(e.target.value)} />
+          </div>
+          <div style={{ alignSelf: "end" }}>
+            <button className="border px-4 py-2 bg-gray-100 hover:bg-gray-200" onClick={createOrLoadSheet} disabled={!canEdit}>
+              📄 צור/טען גיליון
+            </button>
+          </div>
+        </div>
+        {activeSheet && (
+          <div style={{ marginTop: 10 }}>
+            <button className="border px-3 py-1 bg-gray-100 hover:bg-gray-200" onClick={saveSheetNote} disabled={!canEdit}>
+              💾 שמור הערה
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Lots available for loading (remaining > 0) */}
+      <div className="rounded-2xl border bg-white p-4 shadow-sm" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8 }}>שם משחיטה זמינים להעמסה (יתרה &gt; 0)</h3>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border text-sm">
+            <thead>
+              <tr className="bg-gray-50">
+                <Th>שם משחיטה</Th>
+                <Th>מס’ תעודת משלוח (לוט)</Th>
+                <Th>נטו שעובד</Th>
+                <Th>כבר הועמס</Th>
+                <Th>יתרה</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {lots.length === 0 ? (
+                <tr><td className="p-2" colSpan={5}>אין לוטים זמינים.</td></tr>
+              ) : (
+                lots.map(l => (
+                  <tr key={l.id}>
+                    <Td>{l.slaughter_company || "-"}</Td>
+                    <Td>{l.shipment_number || "-"}</Td>
+                    <Td>{Number(l.processed_net_kg || 0).toFixed(2)}</Td>
+                    <Td>{Number(l.loaded_kg || 0).toFixed(2)}</Td>
+                    <Td><b style={{ color: "#0a7" }}>{Number(l.remaining_kg || 0).toFixed(2)}</b></Td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
-      {/* פס סטטוס + כפתור סיום העמסה */}
-      {selOrder && (
-        <div className="mt-3 flex items-center gap-3" style={{display:"flex", alignItems:"center", gap:12}}>
+      {/* Add row */}
+      <div className="rounded-2xl border bg-white p-4 shadow-sm" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 8 }}>הוספת שורה</h3>
+        {!activeSheet && <div style={{ color: "crimson", marginBottom: 8 }}>צור/טען גיליון קודם.</div>}
+        <div className="grid" style={{ gridTemplateColumns: "2fr 1fr 2fr 1fr 1fr 1fr", gap: 12 }}>
           <div>
-            נדרש: <b>{totals.required.toFixed(2)}</b> ק״ג • שוייך:{" "}
-            <b style={{color: totals.missing > 0 ? "crimson" : "green"}}>{totals.linked.toFixed(2)}</b> ק״ג{" "}
-            {totals.missing > 0 ? (
-              <span style={{color:"crimson"}}> (חסר {totals.missing.toFixed(2)} ק״ג)</span>
-            ) : (
-              <span style={{color:"green"}}> ✅ מכוסה</span>
-            )}
+            <label>לקוח *</label>
+            <select className="border p-2 w-full" value={rowCustomerId} onChange={(e) => setRowCustomerId(e.target.value)}>
+              <option value="">— בחר —</option>
+              {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
           </div>
-          <button
-            className="border px-3 py-2 bg-gray-100 hover:bg-gray-200"
-            onClick={finishLoading}
-            disabled={!canEdit}
-          >
-            ✅ סיים העמסה (סמן Loaded)
+          <div>
+            <label>מס׳ תעודת משלוח *</label>
+            <input className="border p-2 w-full" value={rowDelvNo} onChange={(e) => setRowDelvNo(e.target.value)} />
+          </div>
+          <div>
+            <label>שם משחיטה *</label>
+            <select className="border p-2 w-full" value={rowLotId} onChange={(e) => setRowLotId(e.target.value)}>
+              <option value="">— בחר —</option>
+              {lots.map(l => (
+                <option key={l.id} value={l.id}>
+                  {(l.slaughter_company || "—") + " • משלוח " + (l.shipment_number || "—") + " • יתרה " + Number(l.remaining_kg || 0).toFixed(2) + " ק״ג"}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label>כמות (ק״ג) *</label>
+            <input
+              type="number"
+              className="border p-2 w-full"
+              value={rowQty}
+              onChange={(e) => setRowQty(e.target.value)}
+              min={0}
+              max={remainingForSelected > 0 ? remainingForSelected : undefined}
+              placeholder={remainingForSelected > 0 ? `מקס׳ ${remainingForSelected.toFixed(2)} ק״ג` : "אין יתרה"}
+            />
+          </div>
+          <div>
+            <label>טמפ’</label>
+            <input type="number" className="border p-2 w-full" value={rowTemp} onChange={(e) => setRowTemp(e.target.value)} />
+          </div>
+          <div>
+            <label>מגדר *</label>
+            <select
+              className="border p-2 w-full"
+              value={rowGender}
+              onChange={(e)=>setRowGender(e.target.value as "male" | "female" | "")}
+            >
+              <option value="">— בחר —</option>
+              <option value="male">זכר</option>
+              <option value="female">נקבה</option>
+            </select>
+          </div>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <button className="border px-4 py-2 bg-gray-100 hover:bg-gray-200" onClick={addRow} disabled={!canEdit || !activeSheet}>
+            ➕ הוסף שורה
           </button>
         </div>
-      )}
+      </div>
 
-      {!selOrder ? (
-        <div className="mt-6">בחר הזמנה לצפייה בפריטים.</div>
-      ) : (
-        <div className="mt-6">
-          {items.length === 0 ? (
-            <div>אין פריטים להזמנה זו.</div>
-          ) : (
-            items.map(it => (
-              <div key={it.id} className="border rounded p-3 mb-4 bg-white">
-                <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-                  <div><b>{it.product_name}</b> — {it.qty_kg} ק״ג</div>
-                </div>
+      {/* Sheet rows (no "created at" column) */}
+      {activeSheet && (
+        <div className="rounded-2xl border bg-white p-4 shadow-sm" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 8 }}>
+            שורות לגיליון {activeSheet.load_date} — נהג: {activeSheet.driver_name} {activeSheet.note ? `— (${activeSheet.note})` : ""}
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="min-w-full border">
+              <thead>
+                <tr className="bg-gray-50">
+                  <Th>לקוח</Th>
+                  <Th>מס׳ תעודת משלוח</Th>
+                  <Th>שם משחיטה</Th>
+                  <Th>מס’ משלוח לוט</Th>
+                  <Th>כמות (ק״ג)</Th>
+                  <Th>טמפ’</Th>
+                  <Th>מגדר</Th>
+                  <Th>פעולות</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {sheetRows.length === 0 && <tr><td className="p-2" colSpan={8}>אין שורות עדיין.</td></tr>}
+                {sheetRows.map(r => (
+                  <tr key={r.id}>
+                    <Td>{r.customer?.name ?? "-"}</Td>
+                    <Td>{r.delivery_note_number}</Td>
+                    <Td>{r.lot?.supplier || "-"}</Td>
+                    <Td>{r.lot?.shipment_number || "-"}</Td>
+                    <Td>{r.qty_kg}</Td>
+                    <Td>{r.temp_at_loading ?? "-"}</Td>
+                    <Td>{r.gender === "male" ? "זכר" : r.gender === "female" ? "נקבה" : "-"}</Td>
+                    <Td>
+                      <button className="border px-2 py-1 bg-gray-100 hover:bg-gray-200" onClick={() => removeRow(r.id)} disabled={!canEdit}>
+                        מחק
+                      </button>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-                {/* מקורות קיימים */}
-                <div className="mt-2">
-                  <table className="min-w-full border">
-                    <thead>
-                      <tr className="bg-gray-50">
-                        <th className="border p-2">לוט</th>
-                        <th className="border p-2">כמות (ק״ג)</th>
-                        <th className="border p-2">טמפ’ העמסה</th>
-                        {canEdit && <th className="border p-2">מחיקה</th>}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(sources[it.id] || []).length === 0 ? (
-                        <tr><td className="border p-2" colSpan={4}>אין שיוכים כרגע.</td></tr>
-                      ) : (
-                        (sources[it.id] || []).map(s => (
-                          <tr key={s.id}>
-                            <td className="border p-2">{s.lot?.slaughter_company || s.lot?.id || "-"}</td>
-                            <td className="border p-2">{s.qty_kg}</td>
-                            <td className="border p-2">{s.temp_at_loading ?? "-"}</td>
-                            {canEdit && (
-                              <td className="border p-2">
-                                <button className="border px-2 py-1 bg-gray-100 hover:bg-gray-200"
-                                        onClick={()=>removeLink(it.id, s.id)}>מחק</button>
-                              </td>
-                            )}
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+          <div style={{ marginTop: 10, fontSize: 13, color: "#444" }}>
+            סה״כ שוייך בגיליון זה: <b>{totals.linked.toFixed(2)} ק״ג</b>
+          </div>
 
-                {/* הוספת מקור חדש לפריט */}
-                {canEdit && (
-                  <div className="mt-3 grid gap-3" style={{gridTemplateColumns:"2fr 1fr 1fr 1fr"}}>
-                    <select className="border p-2"
-                            value={lotPick[it.id] ?? ""}
-                            onChange={(e)=>setLotPick(p=>({...p, [it.id]: e.target.value}))}>
-                      <option value="">— בחר לוט —</option>
-                      {lots.map(l => <option key={l.id} value={l.id}>
-                        {l.slaughter_company || l.id}
-                      </option>)}
-                    </select>
-                    <input className="border p-2" type="number" placeholder="כמות (ק״ג)"
-                           value={qtyPick[it.id] ?? ""}
-                           onChange={(e)=>setQtyPick(p=>({...p, [it.id]: e.target.value}))}/>
-                    <input className="border p-2" type="number" placeholder="טמפ’"
-                           value={tempPick[it.id] ?? ""}
-                           onChange={(e)=>setTempPick(p=>({...p, [it.id]: e.target.value}))}/>
-                    <button className="border px-3 py-2 bg-gray-100 hover:bg-gray-200"
-                            onClick={()=>addLink(it.id)}>הוסף</button>
-                  </div>
-                )}
-              </div>
-            ))
-          )}
+          <div style={{ marginTop: 10 }}>
+            <button className="border px-3 py-1 bg-gray-100 hover:bg-gray-200" onClick={() => window.print()}>
+              🖨️ הדפס (שמירה כ-PDF)
+            </button>
+          </div>
         </div>
       )}
+
+      {/* Recent sheets list */}
+      <div className="rounded-2xl border bg-white p-4 shadow-sm">
+        <h3 style={{ marginBottom: 8 }}>גליונות אחרונים</h3>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border">
+            <thead>
+              <tr className="bg-gray-50">
+                <Th>תאריך</Th>
+                <Th>נהג</Th>
+                <Th>הערה</Th>
+                <Th>פעולות</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentSheets.length === 0 && <tr><td className="p-2" colSpan={4}>אין גליונות להצגה.</td></tr>}
+              {recentSheets.map(s => (
+                <tr key={s.id}>
+                  <Td>{s.load_date}</Td>
+                  <Td>{s.driver_name}</Td>
+                  <Td>{s.note ?? "-"}</Td>
+                  <Td>
+                    <button className="border px-2 py-1 bg-gray-100 hover:bg-gray-200" onClick={() => openSheet(s.id)}>פתח</button>{" "}
+                    <button className="border px-2 py-1 bg-gray-100 hover:bg-gray-200" onClick={() => deleteSheet(s.id)} disabled={!canEdit}>מחק</button>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
   );
+}
+
+/** ===== Small table helpers ===== */
+function Th({ children }: { children: React.ReactNode }) {
+  return <th className="border p-2 text-right whitespace-nowrap">{children}</th>;
+}
+function Td({ children }: { children: React.ReactNode }) {
+  return <td className="border p-2 text-right">{children}</td>;
 }
