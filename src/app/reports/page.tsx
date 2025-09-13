@@ -92,9 +92,9 @@ export default function ReportsPage() {
       .order("created_at", { ascending: false });
     if (gte) rq = rq.gte("created_at", gte);
     if (lte) rq = rq.lte("created_at", lte);
-    const { data: rdata, error: rerr } = await rq;
+    const { data: rdata, error: rerr }= await rq.returns<[]>();
     if (rerr) throw rerr;
-    setRows((rdata as Row[]) || []);
+    setRows(rdata ?? []);
 
     // לקוחות (לגרפים)
     const { data: cdata, error: cerr } = await supabase.from("customers").select("id,name").order("name");
