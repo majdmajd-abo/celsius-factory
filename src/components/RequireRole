@@ -1,23 +1,61 @@
 "use client";
-import { ReactNode, useEffect, useState } from "react";
+
+import { useEffect, useState, type ReactNode } from "react";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import type { AppRole } from "@/lib/roles";
 
-export default function RequireRole({
-  allow, children, fallback,
-}: { allow: (r: AppRole)=>boolean; children: ReactNode; fallback?: ReactNode }) {
-  const [role, setRole] = useState<AppRole>(null);
-  const [loading, setLoading] = useState(true);
+type Props = {
+  /** אם לא שולחים allow — כל משתמש מחובר עובר */
+  allow?: (role: AppRole | null) => boolean;
+  children: ReactNode;
+  fallback?: ReactNode;
+};
 
-  useEffect(() => { (async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { window.location.href = "/login"; return; }
-    const { data } = await supabase.rpc("get_my_role");
-    setRole((data as AppRole) ?? null);
-    setLoading(false);
-  })(); }, []);
+export default function RequireRole({ allow, children, fallback }: Props) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const search = useSearchParams();
 
-  if (loading) return <div style={{padding:20}}>Loading…</div>;
-  if (!allow(role)) return fallback ?? <div style={{padding:20}}>🚫 אין הרשאה</div>;
+  const [role, setRole] = useState<AppRole | null>(null); // ✅ מאפשר null
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        // חייבים להיות מחוברים
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          const next = pathname + (search?.toString() ? `?${search.toString()}` : "");
+          const url = new URL("/login", window.location.origin);
+          url.searchParams.set("next", next);
+          router.replace(url.toString());
+          return;
+        }
+
+        // קבלת התפקיד (החלף ל-select מהטבלה אם אין לך RPC כזה)
+        const { data, error } = await supabase.rpc("get_my_role");
+        if (error) {
+          console.error("get_my_role error:", error.message);
+          setRole(null);
+        } else {
+          setRole((data as AppRole) ?? null);
+        }
+      } finally {
+        setChecking(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router, pathname, search]);
+
+  if (checking) return <div style={{ padding: 20, direction: "rtl" }}>טוען…</div>;
+
+  // אם לא הועברה allow — מספיק שיש משתמש (role !== null)
+  const isAllowed = allow ? allow(role) : role !== null;
+
+  if (!isAllowed) {
+    return fallback ?? <div style={{ padding: 20, direction: "rtl" }}>🚫 אין לך הרשאה</div>;
+  }
+
   return <>{children}</>;
 }
