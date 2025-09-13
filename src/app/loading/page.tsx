@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -34,22 +32,70 @@ type SheetRow = {
   lot?: { id: string; supplier: string | null; shipment_number: string | null } | null;
 };
 
+/** ===== Normalize rows coming from Supabase (relations arrive as arrays) ===== */
+type DbSheetRow = Omit<SheetRow, "customer" | "lot"> & {
+  customer?: { id: string; name: string }[] | null;
+  lot?: { id: string; supplier: string | null; shipment_number: string | null }[] | null;
+};
+
+function normalizeSheetRow(r: DbSheetRow): SheetRow {
+  return {
+    id: String(r.id),
+    sheet_id: String(r.sheet_id),
+    customer_id: String(r.customer_id),
+    delivery_note_number: String(r.delivery_note_number),
+    lot_id: String(r.lot_id),
+    qty_kg: Number(r.qty_kg),
+    temp_at_loading:
+      r.temp_at_loading === null || r.temp_at_loading === undefined
+        ? null
+        : Number(r.temp_at_loading),
+    gender: (r.gender as "male" | "female" | null) ?? null,
+    customer: r.customer?.[0]
+      ? {
+          id: String(r.customer[0].id),
+          name: String(r.customer[0].name),
+        }
+      : null,
+    lot: r.lot?.[0]
+      ? {
+          id: String(r.lot[0].id),
+          supplier:
+            r.lot[0].supplier === null ? null : String(r.lot[0].supplier),
+          shipment_number:
+            r.lot[0].shipment_number === null
+              ? null
+              : String(r.lot[0].shipment_number),
+        }
+      : null,
+  };
+}
+
 /** helper: to extract an error message from unknown */
 function errMsg(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) {
     const m = (e as { message?: string }).message;
     if (typeof m === "string") return m;
   }
-  try { return JSON.stringify(e); } catch { return String(e); }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
 }
 
 export default function LoadingPage() {
   /** ===== Role / Permissions ===== */
   const [role, setRole] = useState<Role>(null);
-  const canEdit = role === "factory_manager" || role === "production_manager" || role === "driver";
+  const canEdit =
+    role === "factory_manager" ||
+    role === "production_manager" ||
+    role === "driver";
 
   /** ===== Header (Sheet) ===== */
-  const [loadDate, setLoadDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [loadDate, setLoadDate] = useState<string>(() =>
+    new Date().toISOString().slice(0, 10)
+  );
   const [driverName, setDriverName] = useState<string>("");
   const [sheetNote, setSheetNote] = useState<string>("");
   const [activeSheet, setActiveSheet] = useState<Sheet | null>(null);
@@ -83,7 +129,7 @@ export default function LoadingPage() {
           .select("role")
           .eq("id", auth.user.id)
           .single();
-        setRole((profErr ? "employee" : ((prof?.role as Role) || "employee")));
+        setRole(profErr ? "employee" : ((prof?.role as Role) || "employee"));
       } else {
         setRole("employee");
       }
@@ -105,14 +151,16 @@ export default function LoadingPage() {
     init().catch((e) => {
       console.error(e);
       setRole("employee");
-      setMsg("⚠️ שגיאת טעינה ראשונית");
+      setMsg("⚠️ שגיאת טעינה ראשונית: " + errMsg(e));
     });
   }, []);
 
   async function loadAvailableLots() {
     const { data, error } = await supabase
       .from("v_lots_available_for_loading")
-      .select("id, slaughter_company, shipment_number, processed_net_kg, loaded_kg, remaining_kg, created_at")
+      .select(
+        "id, slaughter_company, shipment_number, processed_net_kg, loaded_kg, remaining_kg, created_at"
+      )
       .order("created_at", { ascending: false });
     if (error) {
       setMsg("❌ שגיאה בטעינת לוטים: " + error.message);
@@ -133,21 +181,36 @@ export default function LoadingPage() {
   async function loadSheetRows(sheetId: string) {
     const { data, error } = await supabase
       .from("loading_sheet_rows")
-      .select(`
+      .select(
+        `
         id,sheet_id,customer_id,delivery_note_number,lot_id,qty_kg,temp_at_loading,gender,
         customer:customer_id (id,name),
         lot:lot_id (id,supplier,shipment_number)
-      `)
+      `
+      )
       .eq("sheet_id", sheetId)
       .order("id", { ascending: true });
-    if (!error) setSheetRows((data as SheetRow[]) || []);
+
+    if (error) {
+      setMsg("❌ שגיאה בטעינת שורות: " + error.message);
+      return;
+    }
+
+    const rows = ((data ?? []) as DbSheetRow[]).map(normalizeSheetRow);
+    setSheetRows(rows);
   }
 
   // Create or load a sheet by (date + driver)
   async function createOrLoadSheet() {
     setMsg("");
-    if (!canEdit) { setMsg("❌ אין הרשאה"); return; }
-    if (!loadDate || !driverName.trim()) { setMsg("⚠️ מלא תאריך ושם נהג"); return; }
+    if (!canEdit) {
+      setMsg("❌ אין הרשאה");
+      return;
+    }
+    if (!loadDate || !driverName.trim()) {
+      setMsg("⚠️ מלא תאריך ושם נהג");
+      return;
+    }
 
     const { data: found } = await supabase
       .from("loading_sheets")
@@ -167,10 +230,17 @@ export default function LoadingPage() {
 
     const { data, error } = await supabase
       .from("loading_sheets")
-      .insert({ load_date: loadDate, driver_name: driverName.trim(), note: sheetNote || null })
+      .insert({
+        load_date: loadDate,
+        driver_name: driverName.trim(),
+        note: sheetNote || null,
+      })
       .select("id,load_date,driver_name,note")
       .single();
-    if (error) { setMsg("❌ יצירת גיליון נכשלה: " + error.message); return; }
+    if (error) {
+      setMsg("❌ יצירת גיליון נכשלה: " + error.message);
+      return;
+    }
 
     const created = data as Sheet;
     setActiveSheet(created);
@@ -185,14 +255,21 @@ export default function LoadingPage() {
       .from("loading_sheets")
       .update({ note: sheetNote || null })
       .eq("id", activeSheet.id);
-    if (error) setMsg("❌ עדכון הערה נכשל"); else setMsg("✅ נשמרה הערה");
+    if (error) setMsg("❌ עדכון הערה נכשל");
+    else setMsg("✅ נשמרה הערה");
   }
 
   // Add row (with automatic remaining check on client)
   async function addRow() {
     setMsg("");
-    if (!canEdit) { setMsg("❌ אין הרשאה"); return; }
-    if (!activeSheet) { setMsg("❌ אין גיליון פעיל"); return; }
+    if (!canEdit) {
+      setMsg("❌ אין הרשאה");
+      return;
+    }
+    if (!activeSheet) {
+      setMsg("❌ אין גיליון פעיל");
+      return;
+    }
     if (!rowCustomerId || !rowDelvNo.trim() || !rowLotId || !rowQty) {
       setMsg("⚠️ חובה: לקוח, מס' תעודת משלוח, שם משחיטה, כמות");
       return;
@@ -209,14 +286,16 @@ export default function LoadingPage() {
     }
 
     // 🔒 Client-side: prevent exceeding remaining
-    const lot = lots.find(l => l.id === rowLotId);
+    const lot = lots.find((l) => l.id === rowLotId);
     const remaining = Number(lot?.remaining_kg || 0);
     if (!lot || remaining <= 0) {
       setMsg("❌ אין יתרה בלוט שנבחר");
       return;
     }
     if (qtyNum > remaining + 1e-6) {
-      setMsg(`❌ הכמות (${qtyNum} ק״ג) חורגת מהיתרה (${remaining.toFixed(2)} ק״ג)`);
+      setMsg(
+        `❌ הכמות (${qtyNum} ק״ג) חורגת מהיתרה (${remaining.toFixed(2)} ק״ג)`
+      );
       return;
     }
 
@@ -234,16 +313,22 @@ export default function LoadingPage() {
     const { data, error } = await supabase
       .from("loading_sheet_rows")
       .insert(payload)
-      .select(`
+      .select(
+        `
         id,sheet_id,customer_id,delivery_note_number,lot_id,qty_kg,temp_at_loading,gender,
         customer:customer_id (id,name),
         lot:lot_id (id,supplier,shipment_number)
-      `)
+      `
+      )
       .single();
 
-    if (error) { setMsg("❌ שמירה נכשלה: " + error.message); return; }
+    if (error) {
+      setMsg("❌ שמירה נכשלה: " + error.message);
+      return;
+    }
 
-    setSheetRows(prev => [...prev, (data as SheetRow)]);
+    const inserted = normalizeSheetRow(data as DbSheetRow);
+    setSheetRows((prev) => [...prev, inserted]);
 
     // Reset form
     setRowDelvNo("");
@@ -260,10 +345,19 @@ export default function LoadingPage() {
 
   async function removeRow(rowId: string) {
     setMsg("");
-    if (!canEdit) { setMsg("❌ אין הרשאה"); return; }
-    const { error } = await supabase.from("loading_sheet_rows").delete().eq("id", rowId);
-    if (error) { setMsg("❌ מחיקה נכשלה: " + error.message); return; }
-    setSheetRows(prev => prev.filter(r => r.id !== rowId));
+    if (!canEdit) {
+      setMsg("❌ אין הרשאה");
+      return;
+    }
+    const { error } = await supabase
+      .from("loading_sheet_rows")
+      .delete()
+      .eq("id", rowId);
+    if (error) {
+      setMsg("❌ מחיקה נכשלה: " + error.message);
+      return;
+    }
+    setSheetRows((prev) => prev.filter((r) => r.id !== rowId));
     await loadAvailableLots();
     setMsg("✅ נמחק");
   }
@@ -285,11 +379,20 @@ export default function LoadingPage() {
   }
 
   async function deleteSheet(sid: string) {
-    if (!canEdit) { setMsg("❌ אין הרשאה"); return; }
+    if (!canEdit) {
+      setMsg("❌ אין הרשאה");
+      return;
+    }
     const ok = window.confirm("למחוק את הגיליון וכל שורותיו?");
     if (!ok) return;
-    const { error } = await supabase.from("loading_sheets").delete().eq("id", sid);
-    if (error) { setMsg("❌ מחיקה נכשלה: " + error.message); return; }
+    const { error } = await supabase
+      .from("loading_sheets")
+      .delete()
+      .eq("id", sid);
+    if (error) {
+      setMsg("❌ מחיקה נכשלה: " + error.message);
+      return;
+    }
     if (activeSheet?.id === sid) {
       setActiveSheet(null);
       setSheetRows([]);
@@ -306,7 +409,7 @@ export default function LoadingPage() {
   }, [sheetRows]);
 
   /** For input max hint */
-  const selectedLot = lots.find(l => l.id === rowLotId);
+  const selectedLot = lots.find((l) => l.id === rowLotId);
   const remainingForSelected = Number(selectedLot?.remaining_kg || 0);
 
   return (
