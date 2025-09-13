@@ -1,7 +1,7 @@
- "use client";
+"use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "../../lib/supabaseClient";
+import { supabase } from "@/lib/supabaseClient"; // ✅ אליאס יציב במקום ../../
 
 type Delivery = {
   id: string;
@@ -14,30 +14,32 @@ type Delivery = {
 };
 
 export default function DeliveriesPage() {
-  const [orderNo, setOrderNo]   = useState<string>("");
-  const [customer, setCustomer] = useState<string>("");
-  const [date, setDate]         = useState<string>("");
-  const [file, setFile]         = useState<File | null>(null);
+  const [orderNo, setOrderNo]     = useState<string>("");
+  const [customer, setCustomer]   = useState<string>("");
+  const [date, setDate]           = useState<string>("");
+  const [file, setFile]           = useState<File | null>(null);
 
-  const [rows, setRows]   = useState<Delivery[]>([]);
-  const [msg, setMsg]     = useState<string>("");
-  const [saving, setSaving] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [rows, setRows]           = useState<Delivery[]>([]);
+  const [msg, setMsg]             = useState<string>("");
+  const [saving, setSaving]       = useState<boolean>(false);
+  const [loading, setLoading]     = useState<boolean>(true);
 
   async function loadRows() {
     setLoading(true);
     setMsg("");
+
     const { data, error } = await supabase
       .from("deliveries")
       .select("id, order_no, customer_name, delivery_date, photo_url, signed_at, created_at")
       .order("created_at", { ascending: false })
-      .limit(20);
+      .limit(20)
+      .returns<Delivery[]>(); // ✅ טיפוס חזרה
 
     if (error) {
       setRows([]);
       setMsg("❌ שגיאה בטעינת הנתונים: " + error.message);
     } else {
-      setRows((data as Delivery[]) || []);
+      setRows(data ?? []);
     }
     setLoading(false);
   }
@@ -54,8 +56,8 @@ export default function DeliveriesPage() {
 
     setSaving(true);
     try {
-      const { data: session } = await supabase.auth.getUser();
-      const userId = session.user?.id;
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id;
       if (!userId) {
         setMsg("❌ יש להתחבר למערכת");
         return;
@@ -89,7 +91,6 @@ export default function DeliveriesPage() {
         signed_at: new Date().toISOString(),
         created_by: userId,
       });
-
       if (insErr) {
         setMsg("❌ שמירת הרשומה נכשלה: " + insErr.message);
         return;
@@ -171,7 +172,7 @@ export default function DeliveriesPage() {
 
                 {r.photo_url && (
                   <div style={{ marginTop: 8 }}>
-                    {/* אזהרת Next על <img> היא רק Warning, לא שגיאה */}
+                    {/* הערה: <img> יוצר רק Warning ב־lint; אפשר להמיר ל-next/image אם תרצה */}
                     <img src={r.photo_url} alt="proof" style={{ maxWidth: "100%", borderRadius: 8 }} />
                   </div>
                 )}
