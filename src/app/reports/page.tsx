@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -78,41 +76,41 @@ export default function ReportsPage() {
     const lte = to   ? new Date(to   + "T23:59:59.999").toISOString() : null;
 
     // קבלות מועשרות
-    let rq = supabase
-      .from("v_receipts_enriched")
-      .select([
-        "line_id","supplier","slaughter_company","shipment_number",
-        "gross_qty_kg","net_processed_kg",
-        "male_gross_kg","female_gross_kg",
-        "male_net_kg","female_net_kg",
-        "male_yield_ratio","female_yield_ratio",
-        "male_cost_per_kg","female_cost_per_kg",
-        "created_at"
-      ].join(","))
-      .order("created_at", { ascending: false });
+    const cols = [
+      "line_id","supplier","slaughter_company","shipment_number",
+      "gross_qty_kg","net_processed_kg",
+      "male_gross_kg","female_gross_kg",
+      "male_net_kg","female_net_kg",
+      "male_yield_ratio","female_yield_ratio",
+      "male_cost_per_kg","female_cost_per_kg",
+      "created_at",
+    ].join(",");
+    let rq = supabase.from("v_receipts_enriched").select(cols).order("created_at", { ascending: false });
     if (gte) rq = rq.gte("created_at", gte);
     if (lte) rq = rq.lte("created_at", lte);
-    const { data: rdata, error: rerr }= await rq.returns<[]>();
+    const { data: rdata, error: rerr } = await rq.returns<Row[]>();
     if (rerr) throw rerr;
     setRows(rdata ?? []);
 
     // לקוחות (לגרפים)
-    const { data: cdata, error: cerr } = await supabase.from("customers").select("id,name").order("name");
+    const { data: cdata, error: cerr } =
+      await supabase.from("customers").select("id,name").order("name").returns<Cust[]>();
     if (cerr) throw cerr;
-    setCustomers((cdata as Cust[]) || []);
+    setCustomers(cdata ?? []);
 
     // הזמנות (לגרפים)
     let oq = supabase.from("orders").select("id,customer_id,qty_kg,created_at").order("created_at", { ascending: false });
     if (gte) oq = oq.gte("created_at", gte);
     if (lte) oq = oq.lte("created_at", lte);
-    const { data: odata, error: oerr } = await oq;
+    const { data: odata, error: oerr } = await oq.returns<OrderLite[]>();
     if (oerr) throw oerr;
-    setOrders((odata as OrderLite[]) || []);
+    setOrders(odata ?? []);
 
     // רווח חודשי
-    const { data: pdata, error: perr } = await supabase.from("v_monthly_profit").select("*").order("ym", { ascending: true });
+    const { data: pdata, error: perr } =
+      await supabase.from("v_monthly_profit").select("*").order("ym", { ascending: true }).returns<ProfitRow[]>();
     if (perr) throw perr;
-    setProfit((pdata as ProfitRow[]) || []);
+    setProfit(pdata ?? []);
   }
 
   // סינון טבלה
@@ -331,17 +329,20 @@ function Th({ children }: { children: React.ReactNode }) {
     </th>
   );
 }
+
 function Td({
   children,
   colSpan,
   align,
+  style,
 }: {
   children: React.ReactNode;
   colSpan?: number;
-  align?: React.CSSProperties["textAlign"];
+  align?: "left" | "center" | "right" | "justify" | "char";
+  style?: React.CSSProperties;
 }) {
   return (
-    <td className="border p-2 text-right" colSpan={colSpan} align={align}>
+    <td className="border p-2 text-right" colSpan={colSpan} align={align} style={style}>
       {children}
     </td>
   );
@@ -500,5 +501,3 @@ function VBarChart({
     </svg>
   );
 }
-
-
